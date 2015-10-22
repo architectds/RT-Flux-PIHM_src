@@ -190,6 +190,7 @@ typedef struct Chem_Data_structure
   double TimRiv;         /* transport time of river, calculated in fluxtrans and used in os3d. */
   double Condensation;   /* a factor controls the concentration of infiltrating rain water as a ratio to the concentration in rain water */
   double CnntVelo;       // velocity of minimum connected cells */
+  double CalPorosity;    // Porosity Calibration Coefficient, from Flux-PIHM */
   double ** Dependency;  /* a matrix that describe the dependency of secondary species on the primary species */
   double ** Dep_kinetic; /* a matrix that store the dependency of kinetic species on the primary species (sometimes conversion is required) */
   double ** Dep_kinetic_all; // same as above, for all possible kinetic species

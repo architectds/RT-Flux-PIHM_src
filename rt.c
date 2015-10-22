@@ -1,10 +1,11 @@
 /******************************************************************************
- * PIHM-RT is a finite volume based, reactive transport module that operate
- * on top of the hydrological processes described by PIHM. PIHM-RT track the 
- * transportation and reaction in a given watershed. PIHM-RT uses operator
- * splitting technique to couple transport and reaction. 
+ * RT-Flux-PIHM is a finite volume based, reactive transport module that 
+ * operate on top of the hydrological land surface processes described by 
+ * Flux-PIHM. RT-Flux-PIHM track the transportation and reaction in a given 
+ * watershed. PIHM-RT uses operator splitting technique to couple transport 
+ * and reaction. 
  *
- * PIHM-RT requires two additional input files: 
+ * RT-Flux-PIHM requires two additional input files: 
  *     a. chemical condition file:     projectname.chem
  *     b. index of initial conditions: projectname.cini
  *
@@ -18,6 +19,8 @@
  *     Date     : Feb, 2014   
  *****************************************************************************/
 
+/* Begin system library calls */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -25,11 +28,14 @@
 #include <time.h>
 #include <assert.h>
 #include <sys/time.h>
-#include <omp.h>
+
+/* Begin other library calls */
 
 #include "sundialstypes.h"	/* realtype, integertype, booleantype defination */
 #include "pihm.h"		/* Data Model and Variable Declarations     */
 #include "rt.h"			/* Data Model and Variable Declarations for chemical processes */
+
+/* Begin global variable definition (MACRO) */
 
 #define UNIT_C 1440
 #define ZERO   1E-20
@@ -49,18 +55,18 @@ realtype returnVal (realtype rArea, realtype rPerem, realtype eqWid,
 		    realtype ap_Bool);
 realtype CS_AreaOrPerem (int rivOrder, realtype rivDepth,
 			 realtype rivCoeff, realtype a_pBool);
-void chem_alloc (char *, const void *, const Control_Data *, Chem_Data,
+void     chem_alloc (char *, const void *, const Control_Data *, Chem_Data,
 		 realtype);
-void fluxtrans (realtype, realtype, const void *, Chem_Data, N_Vector);
-void chem_updater (Chem_Data, void *);
-void OS3D (realtype, realtype, Chem_Data);
-int React (realtype, realtype, Chem_Data, int, int *);
-void Lookup (FILE *, Chem_Data, int);
-int Speciation (Chem_Data, int);
-int keymatch (const char *, const char *, double *, char **);
-int SpeciationType (FILE *, char *);
-void AdptTime (Chem_Data, realtype, double, double, double *, int);
-void Reset (Chem_Data, int);
+void     fluxtrans (realtype, realtype, const void *, Chem_Data, N_Vector);
+void     chem_updater (Chem_Data, void *);
+void     OS3D (realtype, realtype, Chem_Data);
+int      React (realtype, realtype, Chem_Data, int, int *);
+void     Lookup (FILE *, Chem_Data, int);
+int      Speciation (Chem_Data, int);
+int      keymatch (const char *, const char *, double *, char **);
+int      SpeciationType (FILE *, char *);
+void     AdptTime (Chem_Data, realtype, double, double, double *, int);
+void     Reset (Chem_Data, int);
 
 /* Fucntion declarations finished   */
 
@@ -99,100 +105,29 @@ Monitor (realtype t, realtype stepsize, void *DS, Chem_Data CD)
   //    fprintf(logfile,"\"%4.4d-%2.2d-%2.2d %2.2d:%2.2d\"\n",timestamp->tm_year+1900,timestamp->tm_mon+1,timestamp->tm_mday,timestamp->tm_hour,timestamp->tm_min);
   //    fprintf(logfile," Time step is %6.4f\n", stepsize);
 
-
-  double *tmpflux = (double *) malloc (CD->NumOsv * sizeof (double));
   double *resflux = (double *) malloc (CD->NumOsv * sizeof (double));
-  swi = 0.2;
-  inv_swi = 2.0 / (1.0 - swi);
-  for (i = 0; i < CD->NumOsv; i++)
-    {
-      tmpflux[i] = 0.0;
-      resflux[i] = 0.0;
-    }
 
-  for (j = 0; j < CD->NumEle; j++)
-    {
-      hu = CD->Vcele[j + MD->NumEle].height_t;
-      hg = CD->Vcele[j].height_t;
-      depth = CD->Vcele[j].height_v;
-      hn = ((swi + 1.0) * 0.5 * (depth - hg) - hu) * inv_swi;
-      ht = depth - hg - hn;
-
-      if ((hg * ht > 0))
-	partratio = ht * 0.30 / hg;	// One forth indicate third order relationship between S and Kr, and so on
-      if (hg <= 0)
-	partratio = 1.00E3;	// no groundwater and flow essentially
-      if (ht <= 0)
-	partratio = 1.00E-3;	// no transient zone flow essentially
-
-      A = partratio / (1 + partratio);
-      tmpflux[j] = A;
-    }
-
-
-  for (i = 0; i < CD->NumFac; i++)
-    {
-      if (!CD->Flux[i].flux_type)
-	{
-	  resflux[CD->Flux[i].nodeup - 1] -= CD->Flux[i].flux * unit_c;	// sum lateral fluxes
-	  //      if ( CD->Flux[i].nodeup == 1)
-	  //      fprintf(logfile, " 1 flux: %f\t", CD->Flux[i].flux);
-	}
-    }
-
-  for (i = 0; i < CD->PIHMFac; i++)
-    {
-
-      if (CD->Flux[i].nodelo <= CD->NumEle)	// averaging the partition ratio between neighbors. 
-	A = (tmpflux[CD->Flux[i].nodeup - 1]
-	     + tmpflux[CD->Flux[i].nodelo - 1]) * 0.5;
-      else
-	{
-	  A = tmpflux[CD->Flux[i].nodeup - 1];
-	  //      fprintf(stderr, " %d to %d with %f\n", CD->Flux[i].nodeup, CD->Flux[i].nodelo, A);
-	}
-      //      if ( A > 1) fprintf(stderr, " partition is wrong\n");
-
-      /*      
-         flux   = CD->Flux[i].flux;
-
-         CD->Flux[ i + CD->PIHMFac].flux     = A * CD->Flux[i].flux;
-         CD->Flux[ i + CD->PIHMFac].velocity = A * CD->Flux[i].velocity ; // this is not accurate, but check if we really used velocity in CFL and OS3D
-
-         CD->Flux[ i ].flux                  = ( 1.0 - A ) * CD->Flux[i].flux;
-         CD->Flux[ i ].velocity              = ( 1.0 - A ) * CD->Flux[i].velocity;
-       */
-      //      fprintf(stderr, " %f=%f\t", 1.0-A, CD->Flux[i].flux/flux);
-    }
-
-  for (i = 0; i < CD->NumFac; i++)
-    {
-      if (!CD->Flux[i].flux_type)
-	{
-	  tmpflux[CD->Flux[i].nodeup - 1] = resflux[CD->Flux[i].nodeup - 1];
-	}
-    }
 
   for (i = 0; i < CD->NumOsv; i++)
     {
       resflux[i] = 0.0;
     }
+
   for (i = 0; i < CD->NumFac; i++)
     {
       if (!CD->Flux[i].flux_type)
 	{
-	  resflux[CD->Flux[i].nodeup - 1] -= CD->Flux[i].flux * unit_c;
+	  resflux[CD->Flux[i].nodeup - 1] -= CD->Flux[i].flux * unit_c;	
 	  // sum lateral fluxes
-	  //      if ( CD->Flux[i].nodeup== 1)
-	  //        fprintf(logfile, " 1 flux: %f\t", CD->Flux[i].flux);
 	}
     }
 
-  //    fprintf(logfile, "h_n+1, h_n, dV, SumLateral_o, SumLateral_n, dV-SL, Recharge_o, Recharge_n, RelDiff, Correction \n hu, hg, depth, hn, ht, partratio, outSL, ImRecharge, TotRecharge\n");
   for (i = 0; i < CD->NumEle; i++)
     {
+      // correct recharge in the saturated zone
+      // The Err Dumper here is the recharge for saturated zone
       sumflux1 = (CD->Vcele[i].height_t - CD->Vcele[i].height_o)
-	* MD->Ele[i].area * MD->Ele[i].Porosity;
+	* MD->Ele[i].area * CD->Vcele[i].porosity;
       sumflux2 = sumflux1 - resflux[i];
       correction = -sumflux2 * UNIT_C / stepsize
 	/ CD->Flux[CD->Vcele[i].ErrDumper].flux;
@@ -208,26 +143,30 @@ Monitor (realtype t, realtype stepsize, void *DS, Chem_Data CD)
       // fprintf(logfile, "%d\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\n", i+1, CD->Vcele[i].height_t, CD->Vcele[i].height_o, sumflux1, tmpflux[i], resflux[i], sumflux2, A, sumflux2 * UNIT_C/ stepsize , (sumflux1-resflux[i] + CD->Flux[CD->Vcele[i].ErrDumper].flux * unit_c )/sumflux1 * 100, correction);
     }
 
+  // Since flux are corrected for saturated zones, resflux need re-calculate
+
   for (i = 0; i < CD->NumOsv; i++)
     {
       resflux[i] = 0.0;
     }
+
   for (i = 0; i < CD->NumFac; i++)
     {
       if (!CD->Flux[i].flux_type)
-	{
-	  resflux[CD->Flux[i].nodeup - 1] -= CD->Flux[i].flux * unit_c;
-	  // sum lateral fluxes
-	  //      if ( CD->Flux[i].nodeup== 1)
-	  //        fprintf(logfile, " 1 flux: %f\t", CD->Flux[i].flux);
-	}
+        {
+          resflux[CD->Flux[i].nodeup - 1] -= CD->Flux[i].flux * unit_c;
+          // sum lateral fluxes
+        }
     }
-  
 
+  
   for (i = CD->NumEle; i < CD->NumEle * 2; i++)
     {
+      // correct infiltration in the unsaturated zone
+      // The Err Dumper here is the infiltration for the saturated zone.
+
       sumflux1 = (CD->Vcele[i].height_t - CD->Vcele[i].height_o)
-	* MD->Ele[i - MD->NumEle].area * MD->Ele[i - MD->NumEle].Porosity;
+	* MD->Ele[i - MD->NumEle].area * CD->Vcele[i].porosity;
       sumflux2 = sumflux1 - resflux[i];
       correction = -sumflux2 * UNIT_C / stepsize / CD->Vcele[i].q;
       A = CD->Flux[CD->Vcele[i].ErrDumper].flux;
@@ -251,12 +190,8 @@ Monitor (realtype t, realtype stepsize, void *DS, Chem_Data CD)
       //  fprintf(logfile, "%d\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\t%8.6f\n", i+1, CD->Vcele[i].height_t, CD->Vcele[i].height_o, MD->Ele[i-MD->NumEle].area, MD->Ele[i-MD->NumEle].Porosity, resflux[i], sumflux2, A, CD->Vcele[i].q , (sumflux1 - resflux[i] - CD->Vcele[i].q * unit_c ) , MD->EleET[i- MD->NumEle][2] * MD->Ele[i-MD->NumEle].area);
     }
 
-  //    CD->Condensation = CD->Condensation / CD->NumEle;
-  //    fprintf(stderr, " ## Condensation factor %f ##\n", CD->Condensation);
-
   //    fclose(logfile);
 
-  free (tmpflux);
   free (resflux);
   free (rawtime);
 }
@@ -717,7 +652,7 @@ chem_alloc (char *filename, const void *DS, const Control_Data * CS,
 
   rewind (chemfile);
   fgets (line, line_width, chemfile);
-  while (keymatch (line, "OUTPUT", tmpval, tmpstr) != 1)
+  while ((keymatch (line, "OUTPUT", tmpval, tmpstr) != 1) && (!feof(chemfile)))
     fgets (line, line_width, chemfile);
   CD->NumBTC = tmpval[0];
   fprintf (stderr, " %d breakthrough points specified\n", CD->NumBTC);
@@ -1395,7 +1330,7 @@ chem_alloc (char *filename, const void *DS, const Control_Data * CS,
 
   rewind (chemfile);
   fgets (line, line_width, chemfile);
-  while (keymatch (line, "PUMP", tmpval, tmpstr) != 1)
+  while ((keymatch (line, "PUMP", tmpval, tmpstr) != 1)  && (!feof(chemfile)))
     fgets (line, line_width, chemfile);
   CD->NumPUMP = tmpval[0];
   fprintf (stderr, " %d pumps specified\n", CD->NumPUMP);
@@ -1473,7 +1408,10 @@ chem_alloc (char *filename, const void *DS, const Control_Data * CS,
       CD->Vcele[i].height_o = MD->DummyY[i + 2 * MD->NumEle];
       CD->Vcele[i].height_t = MD->DummyY[i + 2 * MD->NumEle];
       CD->Vcele[i].area = MD->Ele[i].area;
-      CD->Vcele[i].porosity = MD->Ele[i].Porosity;
+      CD->Vcele[i].porosity = CS->Cal.Porosity*(MD->Soil[(MD->Ele[i].soil-1)].ThetaS);
+      // fprintf(stderr, " PIHM Pe: %6.4f, RT P: %6.4f\n", MD->Ele[i].Porosity, CD->Vcele[i].porosity);
+      // Porosity in PIHM is Effective Porosity = Porosity - Residue Water Porosity
+      // Porosity in RT   is total Porosity, therefore, the water height in the unsaturated zone needs be converted as well
       CD->Vcele[i].vol_o = CD->Vcele[i].area * CD->Vcele[i].height_o;
       CD->Vcele[i].vol = CD->Vcele[i].area * CD->Vcele[i].height_t;
       CD->Vcele[i].sat = 1.0;
@@ -1491,14 +1429,19 @@ chem_alloc (char *filename, const void *DS, const Control_Data * CS,
 
   for (i = MD->NumEle; i < 2 * MD->NumEle; i++)
     {
+      j = i - CD->NumEle;
       CD->Vcele[i].height_v = CD->Vcele[i - MD->NumEle].height_v;
-      CD->Vcele[i].height_o = MD->DummyY[i];
-      CD->Vcele[i].height_t = MD->DummyY[i];
+      CD->Vcele[i].height_o = (MD->DummyY[i] * CS->Cal.Porosity*(MD->Soil[(MD->Ele[j].soil-1)].ThetaS - MD->Soil[(MD->Ele[j].soil-1)].ThetaR )
+			       + (CD->Vcele[i].height_v - CD->Vcele[i- CD->NumEle].height_o) * CS->Cal.Porosity*(MD->Soil[(MD->Ele[j].soil-1)].ThetaR))
+	/ (CS->Cal.Porosity*MD->Soil[(MD->Ele[j].soil-1)].ThetaS);
+      // fprintf(stderr, " PIHM Hu: %6.4f, RT Hu*: %6.4f\n", MD->DummyY[i], CD->Vcele[i].height_o);
+      CD->Vcele[i].height_t = CD->Vcele[i].height_o;
       CD->Vcele[i].area = MD->Ele[i - MD->NumEle].area;
-      CD->Vcele[i].porosity = MD->Ele[i - MD->NumEle].Porosity;
-      //    CD->Vcele[i].sat      = MD->DummyY[i]/ (CD->Vcele[i].height_v-CD->Vcele[i-MD->NumEle].height_o) ;
+      CD->Vcele[i].porosity = CD->Vcele[i - CD->NumEle].porosity;
+      // Unsaturated zone has the same porosity as saturated zone
+      // CD->Vcele[i].sat      = MD->DummyY[i]/ (CD->Vcele[i].height_v-CD->Vcele[i-MD->NumEle].height_o) ;
       CD->Vcele[i].sat =
-	MD->DummyY[i] / (CD->Vcele[i].height_v -
+        CD->Vcele[i].height_o/ (CD->Vcele[i].height_v -
 			 CD->Vcele[i - MD->NumEle].height_o);
       CD->Vcele[i].sat_o = CD->Vcele[i].sat;
       CD->Vcele[i].vol_o = CD->Vcele[i].area * CD->Vcele[i].height_o;
@@ -1511,6 +1454,8 @@ chem_alloc (char *filename, const void *DS, const Control_Data * CS,
       CD->Vcele[i].reset_ref = i - MD->NumEle + 1;
       // default reset reference of unsaturated cells are the groundwater cells underneath
     }
+
+  CD->CalPorosity = CS->Cal.Porosity;
 
   /* Initializing River cells */
   for (i = 2 * MD->NumEle; i < 2 * MD->NumEle + MD->NumRiv; i++)
@@ -2637,7 +2582,11 @@ fluxtrans (realtype t, realtype stepsize, const void *DS, Chem_Data CD,
 	{
 	  j = i - MD->NumEle;
 	  CD->Vcele[i].height_o = CD->Vcele[i].height_t;
-	  CD->Vcele[i].height_t = MAX (Y[i], 1.0E-5);
+	  CD->Vcele[i].height_t = MAX (((Y[i] * CD->CalPorosity*(MD->Soil[(MD->Ele[j].soil-1)].ThetaS - MD->Soil[(MD->Ele[j].soil-1)].ThetaR )
+				       +(CD->Vcele[i].height_v - CD->Vcele[i- CD->NumEle].height_t) * CD->CalPorosity*(MD->Soil[(MD->Ele[j].soil-1)].ThetaR))
+					/ (CD->CalPorosity*MD->Soil[(MD->Ele[j].soil-1)].ThetaS))
+				       , 1.0E-5);
+	  //	  fprintf(stderr, " PIHM Hu: %6.4f, RT Hu*: %6.4f\n", MD->DummyY[i], CD->Vcele[i].height_o);
 	  CD->Vcele[i].height_int = CD->Vcele[i].height_t;
 	  CD->Vcele[i].height_sp =
 	    (CD->Vcele[i].height_t - CD->Vcele[i].height_o) * invavg;
@@ -3119,7 +3068,10 @@ AdptTime (Chem_Data CD, realtype timelps, double rt_step, double hydro_step,
   if (rt_step >= hydro_step)
     int_flg = 0;
   else
-    int_flg = 1;
+    {
+      int_flg = 1;
+      fprintf(stderr, " Sub time step intrapolation performed. \n");
+    }
 
   end_time = org_time + hydro_step;
 
